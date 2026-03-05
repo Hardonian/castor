@@ -7,6 +7,7 @@ ingestion latency, feed errors, and poll success rates.
 """
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
@@ -110,6 +111,7 @@ class RSSIngestService:
         start_time = datetime.now(timezone.utc)
         status = FeedStatus.SUCCESS
         error_message = None
+        error_type = "none"
         
         try:
             # Fetch feed
@@ -157,11 +159,13 @@ class RSSIngestService:
         except asyncio.TimeoutError:
             status = FeedStatus.TIMEOUT
             error_message = "Feed fetch timeout"
+            error_type = "TimeoutError"
             logger.error(f"Timeout fetching feed {feed_url}")
             
         except Exception as e:
             status = FeedStatus.ERROR
             error_message = str(e)
+            error_type = type(e).__name__
             logger.error(f"Error fetching feed {feed_url}: {e}")
             
         finally:
@@ -174,7 +178,7 @@ class RSSIngestService:
             )
             self.metrics.increment_counter(
                 "feed_poll_errors",
-                tags={"podcast_id": podcast_id, "error_type": type(e).__name__ if 'e' in locals() else "unknown"}
+                tags={"podcast_id": podcast_id, "error_type": error_type}
             )
             
             if status != FeedStatus.SUCCESS:
@@ -223,6 +227,20 @@ class RSSIngestService:
             episode = self._extract_episode_metadata(entry)
             if episode:
                 episodes.append(episode)
+
+        # Idempotent normalization: deterministic de-duplication and ordering.
+        deduped_episodes: Dict[str, EpisodeMetadata] = {}
+        for episode in episodes:
+            key = self._canonical_episode_key(episode)
+            existing = deduped_episodes.get(key)
+            if existing is None or episode.publish_date > existing.publish_date:
+                deduped_episodes[key] = episode
+
+        ordered_episodes = sorted(
+            deduped_episodes.values(),
+            key=lambda item: (item.publish_date, item.episode_id),
+            reverse=True,
+        )
         
         return FeedMetadata(
             feed_url=feed_url,
@@ -232,17 +250,26 @@ class RSSIngestService:
             podcast_image_url=podcast_image_url,
             language=language,
             last_build_date=last_build_date,
-            episodes=episodes
+            episodes=ordered_episodes
         )
+
+    def _canonical_episode_key(self, episode: EpisodeMetadata) -> str:
+        """Generate deterministic key used for duplicate detection."""
+        payload = "|".join([
+            self._normalize_text(episode.guid),
+            self._normalize_text(episode.audio_url),
+            self._normalize_text(episode.title),
+        ])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
     
     def _extract_episode_metadata(self, entry: Dict[str, Any]) -> Optional[EpisodeMetadata]:
         """Extract episode metadata from feed entry"""
         try:
             # Get GUID (unique identifier)
-            guid = entry.get("id") or entry.get("guid", "")
+            guid = self._normalize_guid(entry.get("id") or entry.get("guid", ""))
             if not guid:
-                logger.warning("Episode missing GUID, skipping")
-                return None
+                guid = self._fallback_guid(entry)
+                logger.warning("Episode missing GUID, using fallback deterministic GUID")
             
             # Get audio URL
             audio_url = None
@@ -264,14 +291,14 @@ class RSSIngestService:
             # Parse publish date
             publish_date = datetime.now(timezone.utc)
             if entry.get("published_parsed"):
-                publish_date = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                publish_date = datetime(*entry.get("published_parsed")[:6], tzinfo=timezone.utc)
             elif entry.get("updated_parsed"):
-                publish_date = datetime(*entry.updated_parsed[:6], tzinfo=timezone.utc)
+                publish_date = datetime(*entry.get("updated_parsed")[:6], tzinfo=timezone.utc)
             
             # Get duration
             duration = None
             if entry.get("itunes_duration"):
-                duration_str = entry.itunes_duration
+                duration_str = entry.get("itunes_duration")
                 # Parse HH:MM:SS or MM:SS format
                 parts = duration_str.split(":")
                 if len(parts) == 3:
@@ -283,7 +310,7 @@ class RSSIngestService:
             explicit = entry.get("itunes_explicit", "").lower() in ("yes", "true", "explicit")
             
             return EpisodeMetadata(
-                episode_id=f"{guid}_{publish_date.isoformat()}",
+                episode_id=self._build_episode_id(guid, audio_url, entry.get("title", "Untitled"), publish_date),
                 title=entry.get("title", "Untitled"),
                 description=entry.get("description", entry.get("summary", "")),
                 publish_date=publish_date,
@@ -299,6 +326,31 @@ class RSSIngestService:
         except Exception as e:
             logger.error(f"Error extracting episode metadata: {e}")
             return None
+
+    def _build_episode_id(self, guid: str, audio_url: str, title: str, publish_date: datetime) -> str:
+        payload = "|".join([
+            self._normalize_guid(guid),
+            self._normalize_text(audio_url),
+            self._normalize_text(title),
+            publish_date.date().isoformat(),
+        ])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _fallback_guid(self, entry: Dict[str, Any]) -> str:
+        payload = "|".join([
+            self._normalize_text(entry.get("title", "")),
+            self._normalize_text(entry.get("link", "")),
+            self._normalize_text(entry.get("published", "")),
+        ])
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _normalize_guid(self, guid: str) -> str:
+        return self._normalize_text(str(guid).replace("urn:uuid:", ""))
+
+    def _normalize_text(self, value: Any) -> str:
+        if value is None:
+            return ""
+        return str(value).strip().lower()
     
     async def poll_all_feeds(self, feed_configs: List[Dict[str, str]]) -> Dict[str, FeedMetadata]:
         """

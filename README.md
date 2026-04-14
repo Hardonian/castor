@@ -429,3 +429,11 @@ If this project helps you, please give it a star ⭐. It helps others discover t
 **Built with ❤️ for podcasters who want to build real businesses.**
 
 *Last Updated: 2024*
+
+
+## Repository Operations Standards
+
+- Squash-only merges
+- Auto-delete merged branches
+- Weekly dependency update windows
+- Security scanning in CI

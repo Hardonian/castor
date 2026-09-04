@@ -1,5 +1,9 @@
 # Podcast Analytics & Sponsorship Platform
 
+<!-- BEGIN: REPO HERO -->
+![castor — hero generated locally on the GPU stack](assets/repo-hero.png)
+<!-- END: REPO HERO -->
+
 **Turn your podcast into a revenue-generating machine with enterprise-grade analytics, automated sponsor matching, and real-time attribution tracking.**
 
 > **YC Readiness:** Comprehensive YC application and interview prep materials available in [`/yc/`](yc/README.md) directory.

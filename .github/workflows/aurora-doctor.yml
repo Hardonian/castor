@@ -22,6 +22,16 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      
+      - name: Install Supabase and Vercel CLIs
+        # scripts/aurora_prime.py verifies these CLIs are on PATH and fails the
+        # job when they are missing, so the health check needs them installed.
+        run: npm install -g supabase vercel@latest
+      
       - name: Install dependencies
         run: |
           pip install httpx pyyaml

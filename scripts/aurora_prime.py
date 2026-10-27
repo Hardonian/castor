@@ -76,7 +76,12 @@ class AuroraPrime:
         self.status = SystemStatus()
         self.github_workflows_path = self.workspace_path / ".github" / "workflows"
         self.frontend_path = self.workspace_path / "frontend"
-        self.migrations_path = self.workspace_path / "migrations"
+        # Migrations live under db/migrations in this repository; the root-level
+        # migrations/ directory is kept as a fallback for older layouts.
+        db_migrations = self.workspace_path / "db" / "migrations"
+        self.migrations_path = (
+            db_migrations if db_migrations.is_dir() else self.workspace_path / "migrations"
+        )
         self.scripts_path = self.workspace_path / "scripts"
         
     async def run_full_system_check(self) -> SystemStatus:
